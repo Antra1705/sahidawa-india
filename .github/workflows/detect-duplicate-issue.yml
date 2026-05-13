@@ -70,8 +70,7 @@ jobs:
                         `**Please edit your issue description to provide:**\n` +
                         `- Clearer explanation or reproduction steps\n` +
                         `- Expected behavior vs actual behavior\n` +
-                        `- Technical implementation details or context\n\n` +
-                        `*Note: AI-assisted code/issues are perfectly fine at SahiDawa as long as you understand and explain the context clearly!* 💙`
+                        `- Technical implementation details or context\n\n`
                 });
 
                 await github.rest.issues.addLabels({

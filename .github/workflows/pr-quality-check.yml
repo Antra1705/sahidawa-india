@@ -104,8 +104,6 @@ jobs:
 
             Beginners often miss these, and that's perfectly okay! Just update your PR description or title, and this check will automatically re-run.
 
-            *Note: AI assistance is fully welcomed at SahiDawa as long as you understand and test the code you submit!*
-
           # Crucial Fix: NEVER auto-close PRs to maintain a welcoming environment
           close-pr: false
           lock-pr: false
