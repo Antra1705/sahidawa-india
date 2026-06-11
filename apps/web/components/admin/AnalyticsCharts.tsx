@@ -1,45 +1,22 @@
 "use client";
 
-import dynamic from "next/dynamic";
-import { FileText, MapPin, Loader2 } from "lucide-react";
+import {
+    BarChart,
+    Bar,
+    XAxis,
+    YAxis,
+    CartesianGrid,
+    Tooltip,
+    ResponsiveContainer,
+    AreaChart,
+    Area,
+    PieChart,
+    Pie,
+    Cell,
+    Legend,
+} from "recharts";
+import { FileText, MapPin } from "lucide-react";
 import { PieChart as PieChartIcon } from "lucide-react";
-
-// Lazy load all Recharts components to reduce initial bundle size
-const AreaChart = dynamic(() => import("recharts").then((m) => ({ default: m.AreaChart })), {
-    ssr: false,
-});
-const BarChart = dynamic(() => import("recharts").then((m) => ({ default: m.BarChart })), {
-    ssr: false,
-});
-const PieChart = dynamic(() => import("recharts").then((m) => ({ default: m.PieChart })), {
-    ssr: false,
-});
-const Bar = dynamic(() => import("recharts").then((m) => ({ default: m.Bar })), { ssr: false });
-const Area = dynamic(() => import("recharts").then((m) => ({ default: m.Area })), { ssr: false });
-const Pie = dynamic(() => import("recharts").then((m) => ({ default: m.Pie })), { ssr: false });
-const Cell = dynamic(() => import("recharts").then((m) => ({ default: m.Cell })), { ssr: false });
-const XAxis = dynamic(() => import("recharts").then((m) => ({ default: m.XAxis })), { ssr: false });
-const YAxis = dynamic(() => import("recharts").then((m) => ({ default: m.YAxis })), { ssr: false });
-const CartesianGrid = dynamic(
-    () => import("recharts").then((m) => ({ default: m.CartesianGrid })),
-    { ssr: false }
-);
-const Tooltip = dynamic(() => import("recharts").then((m) => ({ default: m.Tooltip })), {
-    ssr: false,
-});
-const Legend = dynamic(() => import("recharts").then((m) => ({ default: m.Legend })), {
-    ssr: false,
-});
-const ResponsiveContainer = dynamic(
-    () => import("recharts").then((m) => ({ default: m.ResponsiveContainer })),
-    { ssr: false }
-);
-
-const ChartSkeleton = () => (
-    <div className="flex h-64 items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-emerald-500" />
-    </div>
-);
 
 const COLORS = {
     emerald: "#10b981",
@@ -98,11 +75,7 @@ export default function AnalyticsCharts({
                                 No data available for chart
                             </div>
                         ) : (
-                            <ResponsiveContainer
-                                width="100%"
-                                height={280}
-                                fallback={<ChartSkeleton />}
-                            >
+                            <ResponsiveContainer width="100%" height={280}>
                                 <AreaChart data={monthlyTrend}>
                                     <defs>
                                         <linearGradient
@@ -190,11 +163,7 @@ export default function AnalyticsCharts({
                                 No reports to display
                             </div>
                         ) : (
-                            <ResponsiveContainer
-                                width="100%"
-                                height={280}
-                                fallback={<ChartSkeleton />}
-                            >
+                            <ResponsiveContainer width="100%" height={280}>
                                 <PieChart>
                                     <Pie
                                         data={reportStatusDist}
@@ -246,11 +215,7 @@ export default function AnalyticsCharts({
                                 No district data available
                             </div>
                         ) : (
-                            <ResponsiveContainer
-                                width="100%"
-                                height={280}
-                                fallback={<ChartSkeleton />}
-                            >
+                            <ResponsiveContainer width="100%" height={280}>
                                 <BarChart data={topDistricts} layout="vertical">
                                     <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                                     <XAxis type="number" tick={{ fontSize: 11, fill: "#64748b" }} />

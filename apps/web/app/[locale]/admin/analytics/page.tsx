@@ -5,7 +5,6 @@ import { Link } from "@/i18n/routing";
 import { supabase } from "@/lib/supabase";
 import { ADMIN_API_BASE } from "@/lib/adminApi";
 import {
-    TrendingUp,
     Pill,
     AlertTriangle,
     CheckCircle,
@@ -15,7 +14,6 @@ import {
     ArrowDown,
     Loader2,
     BarChart3,
-    PieChart as PieChartIcon,
     Clock,
     FileText,
     RefreshCw,
@@ -46,12 +44,6 @@ const COLORS = {
     rose: "#f43f5e",
     cyan: "#06b6d4",
     indigo: "#6366f1",
-};
-
-const STATUS_COLORS: Record<string, string> = {
-    pending: COLORS.amber,
-    verified_fake: COLORS.red,
-    false_alarm: COLORS.emerald,
 };
 
 type PushFailureReason = {
