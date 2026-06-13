@@ -14,6 +14,8 @@ interface MedicineLookup {
     generic_name: string;
 }
 
+type InteractionRecord = LocalInteraction & { id?: string };
+
 const checkSchema = z.object({
     medicines: z
         .array(z.string())
@@ -135,63 +137,77 @@ function parseIdsParam(ids: unknown): string[] {
     );
 }
 
-function getLocalInteraction(a: string, b: string): LocalInteraction | null {
+function getErrorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    if (typeof error === "object" && error && "message" in error) {
+        return String((error as { message?: unknown }).message ?? "");
+    }
+    return String(error);
+}
+
+function isOfflineError(error: unknown): boolean {
+    const message = getErrorMessage(error);
     return (
-        localInteractions.find(
-            (li) =>
-                (li.drug_a_id === a && li.drug_b_id === b) ||
-                (li.drug_a_id === b && li.drug_b_id === a)
-        ) ?? null
+        message.includes("fetch failed") ||
+        message.includes("refused") ||
+        message.includes("timeout")
     );
 }
 
-async function findInteraction(
-    drugA: string,
-    drugB: string
-): Promise<(LocalInteraction & { id?: string }) | null> {
-    let dbFailed = dbConfig?.isSupabaseOffline;
+function getInteractionPairKey(drugA: string, drugB: string): string {
+    return [drugA, drugB].sort().join("::");
+}
 
-    if (!dbFailed) {
-        try {
-            const { data, error } = await supabase
-                .from("drug_interactions")
-                .select("*")
-                .in("drug_a_id", [drugA, drugB])
-                .in("drug_b_id", [drugA, drugB])
-                .limit(4);
+function indexInteractions(interactions: InteractionRecord[]): Map<string, InteractionRecord> {
+    const byPair = new Map<string, InteractionRecord>();
+    interactions.forEach((interaction) => {
+        byPair.set(
+            getInteractionPairKey(interaction.drug_a_id, interaction.drug_b_id),
+            interaction
+        );
+    });
+    return byPair;
+}
 
-            if (error) {
-                dbFailed = true;
-                if (
-                    error.message?.includes("fetch failed") ||
-                    error.message?.includes("refused") ||
-                    error.message?.includes("timeout")
-                ) {
-                    if (dbConfig) dbConfig.isSupabaseOffline = true;
-                }
-            } else if (Array.isArray(data)) {
-                return (
-                    data.find(
-                        (interaction) =>
-                            (interaction.drug_a_id === drugA && interaction.drug_b_id === drugB) ||
-                            (interaction.drug_a_id === drugB && interaction.drug_b_id === drugA)
-                    ) ?? null
-                );
-            }
-        } catch (dbErr: any) {
+function getLocalInteractionsForGenerics(genericNames: string[]): InteractionRecord[] {
+    const selectedGenerics = new Set(genericNames);
+    return localInteractions.filter(
+        (interaction) =>
+            selectedGenerics.has(interaction.drug_a_id) &&
+            selectedGenerics.has(interaction.drug_b_id)
+    );
+}
+
+async function loadInteractionsForGenerics(genericNames: string[]): Promise<InteractionRecord[]> {
+    if (dbConfig?.isSupabaseOffline) {
+        return getLocalInteractionsForGenerics(genericNames);
+    }
+
+    let dbFailed = false;
+
+    try {
+        const { data, error } = await supabase
+            .from("drug_interactions")
+            .select("*")
+            .in("drug_a_id", genericNames)
+            .in("drug_b_id", genericNames);
+
+        if (error) {
             dbFailed = true;
-            const msg = dbErr?.message || String(dbErr);
-            if (
-                msg.includes("fetch failed") ||
-                msg.includes("refused") ||
-                msg.includes("timeout")
-            ) {
+            if (isOfflineError(error)) {
                 if (dbConfig) dbConfig.isSupabaseOffline = true;
             }
+        } else if (Array.isArray(data)) {
+            return data as InteractionRecord[];
+        }
+    } catch (dbErr: unknown) {
+        dbFailed = true;
+        if (isOfflineError(dbErr)) {
+            if (dbConfig) dbConfig.isSupabaseOffline = true;
         }
     }
 
-    return dbFailed ? getLocalInteraction(drugA, drugB) : null;
+    return dbFailed ? getLocalInteractionsForGenerics(genericNames) : [];
 }
 
 /**
@@ -241,6 +257,12 @@ router.get("/", async (req: Request, res: Response) => {
             return;
         }
 
+        const selectedGenerics = Array.from(
+            new Set(medicines.map((medicine) => normalizeGenericName(medicine.generic_name)))
+        );
+        const interactionByPair = indexInteractions(
+            await loadInteractionsForGenerics(selectedGenerics)
+        );
         const interactions = [];
 
         for (let i = 0; i < medicines.length; i++) {
@@ -249,7 +271,7 @@ router.get("/", async (req: Request, res: Response) => {
                 const medicineB = medicines[j];
                 const drugA = normalizeGenericName(medicineA.generic_name);
                 const drugB = normalizeGenericName(medicineB.generic_name);
-                const match = await findInteraction(drugA, drugB);
+                const match = interactionByPair.get(getInteractionPairKey(drugA, drugB));
                 const severity = mapSeverityTag(match?.severity);
 
                 interactions.push({

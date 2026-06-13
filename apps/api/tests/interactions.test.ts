@@ -39,28 +39,30 @@ describe("GET /api/v1/interactions", () => {
     });
 
     it("returns pair interaction warnings with High Risk, Moderate, and Safe tags", async () => {
-        (supabase.in as jest.Mock).mockResolvedValueOnce({
-            data: [
-                {
-                    id: "med-a",
-                    brand_name: "Crocin",
-                    generic_name: "paracetamol",
-                },
-                {
-                    id: "med-b",
-                    brand_name: "Warfarin",
-                    generic_name: "warfarin",
-                },
-                {
-                    id: "med-c",
-                    brand_name: "Brufen",
-                    generic_name: "ibuprofen",
-                },
-            ],
-            error: null,
-        });
+        const selectedGenerics = ["paracetamol", "warfarin", "ibuprofen"];
 
-        (supabase.limit as jest.Mock)
+        (supabase.in as jest.Mock)
+            .mockResolvedValueOnce({
+                data: [
+                    {
+                        id: "med-a",
+                        brand_name: "Crocin",
+                        generic_name: "paracetamol",
+                    },
+                    {
+                        id: "med-b",
+                        brand_name: "Warfarin",
+                        generic_name: "warfarin",
+                    },
+                    {
+                        id: "med-c",
+                        brand_name: "Brufen",
+                        generic_name: "ibuprofen",
+                    },
+                ],
+                error: null,
+            })
+            .mockReturnValueOnce(supabase)
             .mockResolvedValueOnce({
                 data: [
                     {
@@ -72,15 +74,6 @@ describe("GET /api/v1/interactions", () => {
                         mechanism: "Enhanced anticoagulant effect.",
                         source: "DrugBank",
                     },
-                ],
-                error: null,
-            })
-            .mockResolvedValueOnce({
-                data: [],
-                error: null,
-            })
-            .mockResolvedValueOnce({
-                data: [
                     {
                         drug_a_id: "warfarin",
                         drug_b_id: "ibuprofen",
@@ -97,6 +90,13 @@ describe("GET /api/v1/interactions", () => {
         const res = await request(app).get("/api/v1/interactions?ids=med-a,med-b,med-c");
 
         expect(res.status).toBe(200);
+        expect(supabase.from).toHaveBeenCalledTimes(2);
+        expect(supabase.from).toHaveBeenNthCalledWith(1, "medicines");
+        expect(supabase.from).toHaveBeenNthCalledWith(2, "drug_interactions");
+        expect(supabase.in).toHaveBeenCalledTimes(3);
+        expect(supabase.in).toHaveBeenNthCalledWith(2, "drug_a_id", selectedGenerics);
+        expect(supabase.in).toHaveBeenNthCalledWith(3, "drug_b_id", selectedGenerics);
+        expect(supabase.limit).not.toHaveBeenCalled();
         expect(res.body.interactions).toEqual([
             expect.objectContaining({
                 medicineAId: "med-a",
