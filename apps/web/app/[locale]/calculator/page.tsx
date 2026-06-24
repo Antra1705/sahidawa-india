@@ -9,15 +9,7 @@ import { supabase } from "@/lib/supabase";
 import { escapePostgrest } from "@/lib/supabase/utils";
 import type { Medicine } from "@/src/components/ComparisonGrid";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
-import {
-    Pill,
-    AlertCircle,
-    DollarSign,
-    Calendar,
-    Sparkles,
-    MapPin,
-    ArrowRight,
-} from "lucide-react";
+import { Pill, AlertCircle, DollarSign, Calendar, MapPin, ArrowRight } from "lucide-react";
 // NEW: Import the card and skeleton
 import GenericAlternativeCard from "@/components/GenericAlternativeCard";
 import GenericAlternativeCardSkeleton from "@/components/GenericAlternativeCardSkeleton";
