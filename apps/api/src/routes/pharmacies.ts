@@ -6,6 +6,7 @@ import { redisClient } from "../utils/redis";
 import { limiter } from "../middleware/rateLimit";
 import { requireAuth, AuthenticatedRequest } from "../middleware/auth";
 import { FormattedPharmacy, PharmacyRpcResult } from "../types/pharmacy.types";
+import { redisCache } from "../middleware/redisCache";
 
 const router = Router();
 
@@ -19,6 +20,8 @@ const GEOSPATIAL_CACHE_CONTROL = "public, max-age=300, s-maxage=300, stale-while
 const setGeospatialCacheHeaders = (res: Response) => {
     res.setHeader("Cache-Control", GEOSPATIAL_CACHE_CONTROL);
 };
+
+import { cacheMiddleware } from "../middleware/cache";
 
 // ── TypeScript interfaces ────────────────────────────────────────────────────
 
@@ -175,6 +178,8 @@ const boundsQuerySchema = z
         north: z.coerce.number().min(-90).max(90),
         east: z.coerce.number().min(-180).max(180),
         since: z.coerce.date().optional(),
+        limit: z.coerce.number().int().min(1).max(1000).default(200),
+        offset: z.coerce.number().int().min(0).default(0),
     })
     .refine((data) => data.south < data.north, {
         message: "South boundary must be less than North boundary",
@@ -234,6 +239,7 @@ function extractCoordinates(p: PharmacyRow): { lat: number; lng: number } {
 function formatPharmacy(p: PharmacyRow, distanceKm: number): FormattedPharmacy {
     const coords = extractCoordinates(p);
     return {
+        id: p.id,
         name: p.name || "Unknown Pharmacy",
         address: p.address || "Unknown Address",
         lat: coords.lat,
@@ -243,6 +249,9 @@ function formatPharmacy(p: PharmacyRow, distanceKm: number): FormattedPharmacy {
         is_verified: p.is_verified ?? false,
         district: p.district || null,
         state: p.state || null,
+        updated_at: p.updated_at,
+        is_active: p.is_active,
+        deleted_at: p.deleted_at,
     };
 }
 
@@ -379,124 +388,111 @@ function handleFetchError(
  *       500:
  *         description: Server or database error
  */
-router.get("/nearest", limiter, async (req: Request, res: Response, next: NextFunction) => {
-    try {
-        const result = nearestQuerySchema.safeParse(req.query);
+router.get(
+    "/nearest",
+    limiter,
+    cacheMiddleware(300, 600),
+    redisCache(3600, (req: Request) => {
+        const lat = Number(req.query.lat);
+        const lng = Number(req.query.lng);
+        const radius = Number(req.query.radius ?? 50);
 
-        if (!result.success) {
-            res.status(400).json({
-                error: "Invalid coordinates",
-                details: result.error.flatten().fieldErrors,
-            });
-            return;
-        }
-
-        const { lat, lng, radius } = result.data;
-
-        const roundedLat = lat.toFixed(3);
-        const roundedLng = lng.toFixed(3);
-
-        const cacheKey = `pharmacies:nearest:${roundedLat}:${roundedLng}:${radius}`;
-
+        return `pharmacies:nearest:${lat.toFixed(3)}:${lng.toFixed(3)}:${radius}`;
+    }),
+    async (req: Request, res: Response, next: NextFunction) => {
         try {
-            if (redisClient.isOpen) {
-                const cached = await redisClient.get(cacheKey);
+            const result = nearestQuerySchema.safeParse(req.query);
 
-                if (cached) {
-                    return res.json(JSON.parse(cached));
-                }
+            if (!result.success) {
+                res.status(400).json({
+                    error: "Invalid coordinates",
+                    details: result.error.flatten().fieldErrors,
+                });
+                return;
             }
-        } catch (error) {
-            logger.warn("Redis cache read failed", { error });
-        }
 
-        // Primary path: PostGIS RPC with server-side radius filtering
-        const { data: rpcData, error: rpcError } = await supabase.rpc("get_nearest_pharmacies", {
-            query_lat: lat,
-            query_lng: lng,
-            search_radius_km: radius,
-        });
+            const { lat, lng, radius } = result.data;
 
-        if (!rpcError && rpcData) {
-            const pharmacies: FormattedPharmacy[] = (rpcData as PharmacyRpcResult[])
-                .map((p: PharmacyRpcResult) => ({
-                    name: p.name || "Unknown Pharmacy",
-                    address: p.address || "Unknown Address",
-                    lat: p.lat,
-                    lng: p.lng,
-                    distance: `${Number(p.distance).toFixed(1)} km`,
-                    phone_number: p.phone_number || null,
-                    is_verified: p.is_verified ?? false,
-                    district: p.district || null,
-                    state: p.state || null,
-                }))
-                .slice(0, MAX_RESULTS);
+            // Primary path: PostGIS RPC with server-side radius filtering
+            const { data: rpcData, error: rpcError } = await supabase.rpc(
+                "get_nearest_pharmacies",
+                {
+                    query_lat: lat,
+                    query_lng: lng,
+                    search_radius_km: radius,
+                }
+            );
+
+            if (!rpcError && rpcData) {
+                const pharmacies: FormattedPharmacy[] = (rpcData as PharmacyRpcResult[])
+                    .map((p: PharmacyRpcResult) => ({
+                        name: p.name || "Unknown Pharmacy",
+                        address: p.address || "Unknown Address",
+                        lat: p.lat,
+                        lng: p.lng,
+                        distance: `${Number(p.distance).toFixed(1)} km`,
+                        phone_number: p.phone_number || null,
+                        is_verified: p.is_verified ?? false,
+                        district: p.district || null,
+                        state: p.state || null,
+                    }))
+                    .slice(0, MAX_RESULTS);
+
+                const responseData = { pharmacies };
+
+                return res.json(responseData);
+            }
+
+            // Fallback path: Haversine calculation in JavaScript
+            logger.warn(
+                "PostGIS RPC failed or unavailable, falling back to Haversine calculation",
+                {
+                    error: rpcError?.message,
+                    code: rpcError?.code,
+                }
+            );
+
+            const { data: allPharmacies, error: fetchError } = await supabase
+                .from("pharmacies")
+                .select(
+                    "name, address, location, phone_number, is_verified, district, state, status"
+                )
+                .eq("status", "approved")
+                .limit(3000);
+
+            if (fetchError) {
+                handleFetchError(fetchError, res);
+                return;
+            }
+
+            const pharmacies: FormattedPharmacy[] = ((allPharmacies || []) as PharmacyRow[])
+                .filter((p: PharmacyRow) => p.status === "approved")
+                .map((p: PharmacyRow): PharmacyWithRawDistance => {
+                    const coords = extractCoordinates(p);
+                    const distanceKm = calculateDistanceKM(lat, lng, coords.lat, coords.lng);
+                    return { ...formatPharmacy(p, distanceKm), rawDistance: distanceKm };
+                })
+                .filter(
+                    (p: PharmacyWithRawDistance) =>
+                        p.lat !== 0 && p.lng !== 0 && p.rawDistance <= radius
+                )
+                .sort(
+                    (a: PharmacyWithRawDistance, b: PharmacyWithRawDistance) =>
+                        a.rawDistance - b.rawDistance
+                )
+                .slice(0, MAX_RESULTS)
+                .map(
+                    ({ rawDistance, ...rest }: PharmacyWithRawDistance): FormattedPharmacy => rest
+                );
 
             const responseData = { pharmacies };
 
-            try {
-                if (redisClient.isOpen) {
-                    await redisClient.set(cacheKey, JSON.stringify(responseData), { EX: 3600 });
-                }
-            } catch (error) {
-                logger.warn("Redis cache write failed", { error });
-            }
-
-            setGeospatialCacheHeaders(res);
-            return res.json(responseData);
+            res.json(responseData);
+        } catch (err) {
+            next(err);
         }
-
-        // Fallback path: Haversine calculation in JavaScript
-        logger.warn("PostGIS RPC failed or unavailable, falling back to Haversine calculation", {
-            error: rpcError?.message,
-            code: rpcError?.code,
-        });
-
-        const { data: allPharmacies, error: fetchError } = await supabase
-            .from("pharmacies")
-            .select("name, address, location, phone_number, is_verified, district, state, status")
-            .eq("status", "approved")
-            .limit(3000);
-
-        if (fetchError) {
-            handleFetchError(fetchError, res);
-            return;
-        }
-
-        const pharmacies: FormattedPharmacy[] = ((allPharmacies || []) as PharmacyRow[])
-            .filter((p: PharmacyRow) => p.status === "approved")
-            .map((p: PharmacyRow): PharmacyWithRawDistance => {
-                const coords = extractCoordinates(p);
-                const distanceKm = calculateDistanceKM(lat, lng, coords.lat, coords.lng);
-                return { ...formatPharmacy(p, distanceKm), rawDistance: distanceKm };
-            })
-            .filter(
-                (p: PharmacyWithRawDistance) =>
-                    p.lat !== 0 && p.lng !== 0 && p.rawDistance <= radius
-            )
-            .sort(
-                (a: PharmacyWithRawDistance, b: PharmacyWithRawDistance) =>
-                    a.rawDistance - b.rawDistance
-            )
-            .slice(0, MAX_RESULTS)
-            .map(({ rawDistance, ...rest }: PharmacyWithRawDistance): FormattedPharmacy => rest);
-
-        const responseData = { pharmacies };
-
-        try {
-            if (redisClient.isOpen) {
-                await redisClient.set(cacheKey, JSON.stringify(responseData), { EX: 3600 });
-            }
-        } catch (error) {
-            logger.warn("Redis cache write failed", { error });
-        }
-
-        setGeospatialCacheHeaders(res);
-        res.json(responseData);
-    } catch (err) {
-        next(err);
     }
-});
+);
 
 /**
  * @openapi
@@ -619,155 +615,162 @@ router.get("/nearest", limiter, async (req: Request, res: Response, next: NextFu
  *       500:
  *         description: Server or database error
  */
-router.get("/in-bounds", async (req: Request, res: Response, next: NextFunction) => {
-    try {
-        const result = boundsQuerySchema.safeParse(req.query);
+router.get(
+    "/in-bounds",
+    limiter,
+    cacheMiddleware(300, 600),
+    async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const result = boundsQuerySchema.safeParse(req.query);
 
-        if (!result.success) {
-            res.status(400).json({
-                error: "Invalid bounds",
-                details: result.error.flatten().fieldErrors,
+            if (!result.success) {
+                res.status(400).json({
+                    error: "Invalid bounds",
+                    details: result.error.flatten().fieldErrors,
+                });
+                return;
+            }
+
+            const { south, west, north, east, since, limit, offset } = result.data;
+            const syncedAt = new Date().toISOString();
+
+            const centerLat = (south + north) / 2;
+            const centerLng = (west + east) / 2;
+
+            let rpcData, rpcError;
+            if (since) {
+                const { data, error } = await supabase.rpc("get_pharmacies_in_bounds_delta", {
+                    bound_south: south,
+                    bound_west: west,
+                    bound_north: north,
+                    bound_east: east,
+                    since: since.toISOString(),
+                });
+                rpcData = data;
+                rpcError = error;
+            } else {
+                const { data, error } = await supabase.rpc("get_pharmacies_in_bounds", {
+                    bound_south: south,
+                    bound_west: west,
+                    bound_north: north,
+                    bound_east: east,
+                    query_limit: limit,
+                    query_offset: offset,
+                });
+                rpcData = data;
+                rpcError = error;
+            }
+
+            if (!rpcError && rpcData) {
+                const pharmacies: FormattedPharmacy[] = (rpcData as PharmacyRpcResult[])
+                    .map((p: PharmacyRpcResult) => ({
+                        id: p.id,
+                        name: p.name || "Unknown Pharmacy",
+                        address: p.address || "Unknown Address",
+                        lat: p.lat,
+                        lng: p.lng,
+                        distance: `${Number(p.distance).toFixed(1)} km`,
+                        phone_number: p.phone_number || null,
+                        is_verified: p.is_verified ?? false,
+                        district: p.district || null,
+                        state: p.state || null,
+                        updated_at: p.updated_at,
+                        is_active: p.is_active ?? true,
+                        deleted_at: p.deleted_at ?? null,
+                    }))
+                    .slice(0, MAX_RESULTS);
+                setGeospatialCacheHeaders(res);
+                return res.json({
+                    pharmacies,
+                    syncedAt,
+                    delta: since !== undefined,
+                });
+            }
+
+            // Fallback path: in-memory bounding box filter
+            logger.warn("PostGIS bounds RPC unavailable, falling back to in-memory filter", {
+                error: rpcError?.message,
             });
-            return;
-        }
 
-        const { south, west, north, east, since } = result.data;
-        const syncedAt = new Date().toISOString();
+            let query;
+            if (since) {
+                query = supabase
+                    .from("pharmacies")
+                    .select(
+                        "id, name, address, location, phone_number, is_verified, district, state, status, updated_at, is_active, deleted_at"
+                    )
+                    .eq("status", "approved")
+                    .gt("updated_at", since.toISOString());
+            } else {
+                query = supabase
+                    .from("pharmacies")
+                    .select(
+                        "id, name, address, location, phone_number, is_verified, district, state, status, updated_at, is_active, deleted_at"
+                    )
+                    .eq("status", "approved");
+            }
 
-        const centerLat = (south + north) / 2;
-        const centerLng = (west + east) / 2;
+            const { data: allPharmacies, error: fetchError } = await query.limit(3000);
 
-        let rpcData, rpcError;
-        if (since) {
-            const { data, error } = await supabase.rpc("get_pharmacies_in_bounds_delta", {
-                bound_south: south,
-                bound_west: west,
-                bound_north: north,
-                bound_east: east,
-                since: since.toISOString(),
-            });
-            rpcData = data;
-            rpcError = error;
-        } else {
-            const { data, error } = await supabase.rpc("get_pharmacies_in_bounds", {
-                bound_south: south,
-                bound_west: west,
-                bound_north: north,
-                bound_east: east,
-            });
-            rpcData = data;
-            rpcError = error;
-        }
+            if (fetchError) {
+                handleFetchError(fetchError, res);
+                return;
+            }
 
-        if (!rpcError && rpcData) {
-            const pharmacies: FormattedPharmacy[] = (rpcData as PharmacyRpcResult[])
-                .map((p: PharmacyRpcResult) => ({
-                    id: p.id,
-                    name: p.name || "Unknown Pharmacy",
-                    address: p.address || "Unknown Address",
-                    lat: p.lat,
-                    lng: p.lng,
-                    distance: `${Number(p.distance).toFixed(1)} km`,
-                    phone_number: p.phone_number || null,
-                    is_verified: p.is_verified ?? false,
-                    district: p.district || null,
-                    state: p.state || null,
-                    updated_at: p.updated_at,
-                    is_active: p.is_active,
-                    deleted_at: p.deleted_at,
-                }))
-                .slice(0, MAX_RESULTS);
+            const pharmacies: FormattedPharmacy[] = ((allPharmacies || []) as PharmacyRow[])
+                .filter((p: PharmacyRow) => {
+                    if (p.status !== "approved") return false;
+                    if (!since && p.is_active === false) return false;
+                    return true;
+                })
+                .map((p: PharmacyRow) => {
+                    const coords = extractCoordinates(p);
+                    const distanceKm = calculateDistanceKM(
+                        centerLat,
+                        centerLng,
+                        coords.lat,
+                        coords.lng
+                    );
+                    return {
+                        id: p.id,
+                        name: p.name || "Unknown Pharmacy",
+                        address: p.address || "Unknown Address",
+                        lat: coords.lat,
+                        lng: coords.lng,
+                        distance: `${distanceKm.toFixed(1)} km`,
+                        phone_number: p.phone_number || null,
+                        is_verified: p.is_verified ?? false,
+                        district: p.district || null,
+                        state: p.state || null,
+                        updated_at: p.updated_at,
+                        is_active: p.is_active,
+                        deleted_at: p.deleted_at,
+                        coords,
+                    };
+                })
+                .filter(
+                    (p) =>
+                        p.coords.lat !== 0 &&
+                        p.coords.lng !== 0 &&
+                        p.coords.lat >= south &&
+                        p.coords.lat <= north &&
+                        p.coords.lng >= west &&
+                        p.coords.lng <= east
+                )
+                .slice(0, MAX_RESULTS)
+                .map(({ coords, ...rest }) => rest);
+
             setGeospatialCacheHeaders(res);
-            return res.json({
+            res.json({
                 pharmacies,
                 syncedAt,
                 delta: since !== undefined,
             });
+        } catch (err) {
+            next(err);
         }
-
-        // Fallback path: in-memory bounding box filter
-        logger.warn("PostGIS bounds RPC unavailable, falling back to in-memory filter", {
-            error: rpcError?.message,
-        });
-
-        let query;
-        if (since) {
-            query = supabase
-                .from("pharmacies")
-                .select(
-                    "id, name, address, location, phone_number, is_verified, district, state, status, updated_at, is_active, deleted_at"
-                )
-                .eq("status", "approved")
-                .gt("updated_at", since.toISOString());
-        } else {
-            query = supabase
-                .from("pharmacies")
-                .select(
-                    "id, name, address, location, phone_number, is_verified, district, state, status, updated_at, is_active, deleted_at"
-                )
-                .eq("status", "approved");
-        }
-
-        const { data: allPharmacies, error: fetchError } = await query.limit(3000);
-
-        if (fetchError) {
-            handleFetchError(fetchError, res);
-            return;
-        }
-
-        const pharmacies: FormattedPharmacy[] = ((allPharmacies || []) as PharmacyRow[])
-            .filter((p: PharmacyRow) => {
-                if (p.status !== "approved") return false;
-                if (!since && p.is_active === false) return false;
-                return true;
-            })
-            .map((p: PharmacyRow) => {
-                const coords = extractCoordinates(p);
-                const distanceKm = calculateDistanceKM(
-                    centerLat,
-                    centerLng,
-                    coords.lat,
-                    coords.lng
-                );
-                return {
-                    id: p.id,
-                    name: p.name || "Unknown Pharmacy",
-                    address: p.address || "Unknown Address",
-                    lat: coords.lat,
-                    lng: coords.lng,
-                    distance: `${distanceKm.toFixed(1)} km`,
-                    phone_number: p.phone_number || null,
-                    is_verified: p.is_verified ?? false,
-                    district: p.district || null,
-                    state: p.state || null,
-                    updated_at: p.updated_at,
-                    is_active: p.is_active,
-                    deleted_at: p.deleted_at,
-                    coords,
-                };
-            })
-            .filter(
-                (p) =>
-                    p.coords.lat !== 0 &&
-                    p.coords.lng !== 0 &&
-                    p.coords.lat >= south &&
-                    p.coords.lat <= north &&
-                    p.coords.lng >= west &&
-                    p.coords.lng <= east
-            )
-            .slice(0, MAX_RESULTS)
-            .map(({ coords, ...rest }) => rest);
-
-        setGeospatialCacheHeaders(res);
-        res.json({
-            pharmacies,
-            syncedAt,
-            delta: since !== undefined,
-        });
-    } catch (err) {
-        next(err);
     }
-});
+);
 router.post(
     "/bulk-upload",
     requireAuth,

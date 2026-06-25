@@ -5,6 +5,11 @@ import { rateLimit } from "@/lib/rateLimit";
 import { BASE_PROMPT } from "@/lib/chatPrompts";
 import { structuredLog } from "@/lib/structuredLogger";
 import { ChatRoles, ChatRole } from "@/lib/constants";
+import crypto from "crypto";
+
+import { trimHistoryByTokens } from "@/lib/chatUtils";
+
+const summaryCache = new Map<string, string>();
 
 const DEFAULT_DISCLAIMER =
     "This guidance is for informational use only and is not a diagnosis. Consult a doctor or pharmacist, especially for severe or persistent symptoms.";
@@ -184,7 +189,11 @@ export async function POST(req: Request) {
 
         const MAX_MESSAGES = 50;
         const MAX_MESSAGE_CHARS = 2000;
-        const trimmedMessages = messages.slice(-MAX_MESSAGES);
+        const MAX_TOKENS = 3000; // Safe limit for standard context + response
+        const recentMessages = messages.slice(-MAX_MESSAGES);
+        const history = trimHistoryByTokens(recentMessages, MAX_TOKENS);
+        let trimmedMessages = history.trimmedMessages;
+        const droppedMessages = history.droppedMessages;
 
         for (const msg of trimmedMessages) {
             const text = msg.text || msg.content || "";
@@ -303,6 +312,50 @@ export async function POST(req: Request) {
                 ...parsedResponse,
                 emergency: emergencyFromML || deterministicEmergency.isEmergency,
             });
+        }
+
+        if (droppedMessages.length > 0) {
+            try {
+                const droppedText = droppedMessages
+                    .map((m) => `${m.role}: ${m.text || m.content}`)
+                    .join("\n");
+                const cacheKey = crypto.createHash("sha256").update(droppedText).digest("hex");
+
+                let summary = summaryCache.get(cacheKey);
+
+                if (!summary) {
+                    const summaryPrompt = `Summarize the following conversation history briefly to retain key context for the ongoing chat. Keep it concise.\n\n${droppedText}`;
+                    const summaryResponse = await ai.models.generateContent({
+                        model: "gemini-2.5-flash",
+                        contents: summaryPrompt,
+                    });
+
+                    summary = summaryResponse.text || "";
+                    if (summary) {
+                        summaryCache.set(cacheKey, summary);
+                        if (summaryCache.size > 1000) {
+                            const firstKey = summaryCache.keys().next().value;
+                            if (firstKey) summaryCache.delete(firstKey);
+                        }
+                    }
+                }
+
+                if (summary) {
+                    trimmedMessages = [
+                        {
+                            role: ChatRoles.ASSISTANT,
+                            content: `[Previous Context Summary]: ${summary}`,
+                        },
+                        ...trimmedMessages,
+                    ];
+                }
+            } catch (error) {
+                structuredLog({
+                    log_level: "warn",
+                    route: ROUTE,
+                    meta: { reason: "summarization_failed", error: String(error) },
+                });
+            }
         }
 
         const formattedContents = mapMessagesToGeminiContents(trimmedMessages);
