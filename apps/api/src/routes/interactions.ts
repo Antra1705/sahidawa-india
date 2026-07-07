@@ -3,6 +3,7 @@ import { z } from "zod";
 import { supabase, dbConfig } from "../db/client";
 import logger from "../utils/logger";
 import { escapePostgrest } from "../utils/db";
+import { uuidSchema } from "../utils/validation";
 import { interactionCheckLimiter } from "../middleware/rateLimit";
 import zlib from "zlib";
 import { MAX_INTERACTION_MEDICINES } from "@sahidawa/shared";
@@ -32,6 +33,14 @@ const checkSchema = z.object({
             `A maximum of ${MAX_INTERACTION_MEDICINES} medicines can be checked at once`
         ),
 });
+
+const medicineIdsQuerySchema = z
+    .array(uuidSchema)
+    .min(2)
+    .max(MAX_INTERACTION_MEDICINES)
+    .refine((ids) => new Set(ids).size === ids.length, {
+        message: "Medicine ids must be unique",
+    });
 
 export function buildMedicineResolutionFilter(input: string): string {
     const escaped = escapePostgrest(input);
@@ -189,16 +198,20 @@ function mapSeverityTag(severity?: string | null): WarningSeverity {
     }
 }
 
-function parseIdsParam(ids: unknown): string[] {
+function parseIdsParam(ids: unknown): { success: true; ids: string[] } | { success: false } {
     const raw = Array.isArray(ids) ? ids.join(",") : typeof ids === "string" ? ids : "";
-    return Array.from(
-        new Set(
-            raw
-                .split(",")
-                .map((id) => id.trim())
-                .filter(Boolean)
-        )
+    const parsed = medicineIdsQuerySchema.safeParse(
+        raw
+            .split(",")
+            .map((id) => id.trim())
+            .filter(Boolean)
     );
+
+    if (!parsed.success) {
+        return { success: false };
+    }
+
+    return { success: true, ids: parsed.data };
 }
 
 function getErrorMessage(error: unknown): string {
@@ -296,19 +309,14 @@ async function loadInteractionsForGenerics(genericNames: string[]): Promise<Inte
  *         example: med-a,med-b,med-c
  */
 router.get("/", interactionCheckLimiter, async (req: Request, res: Response) => {
-    const ids = parseIdsParam(req.query.ids);
+    const parsedIds = parseIdsParam(req.query.ids);
 
-    if (ids.length < 2) {
-        res.status(400).json({ error: "At least two medicine ids are required" });
+    if (!parsedIds.success) {
+        res.status(400).json({ error: "Invalid medicine id list" });
         return;
     }
 
-    if (ids.length > MAX_INTERACTION_MEDICINES) {
-        res.status(400).json({
-            error: `At most ${MAX_INTERACTION_MEDICINES} medicine ids are allowed`,
-        });
-        return;
-    }
+    const { ids } = parsedIds;
 
     try {
         const { data, error } = await supabase
@@ -330,7 +338,8 @@ router.get("/", interactionCheckLimiter, async (req: Request, res: Response) => 
             .filter((medicine): medicine is MedicineLookup => medicine != null);
 
         if (medicines.length < 2) {
-            res.status(400).json({ error: "At least two valid medicines are required" });
+            res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+            res.status(200).json({ interactions: [] });
             return;
         }
 
@@ -380,11 +389,12 @@ router.get("/", interactionCheckLimiter, async (req: Request, res: Response) => 
             }
         }
 
+        res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
         res.status(200).json({ interactions });
     } catch (err) {
         const msg = err instanceof Error ? err.message : "Unknown error";
         logger.error(`Error checking interaction ids: ${msg}`);
-        res.status(500).json({ error: "Failed to check medicine interactions", details: msg });
+        res.status(500).json({ error: "Failed to check medicine interactions" });
     }
 });
 
@@ -606,7 +616,7 @@ router.post("/check", interactionCheckLimiter, async (req: Request, res: Respons
     } catch (err) {
         const msg = err instanceof Error ? err.message : "Unknown error";
         logger.error(`Error checking drug interactions: ${msg}`);
-        res.status(500).json({ error: "Failed to check drug interactions", details: msg });
+        res.status(500).json({ error: "Failed to check drug interactions" });
     }
 });
 
