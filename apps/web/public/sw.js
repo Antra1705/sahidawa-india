@@ -683,12 +683,13 @@ async function flushQueueFromServiceWorker() {
     for (const item of queue) {
         try {
             // Determine if the URL is ML service or regular API
-            const isMl = item.apiUrl && item.apiUrl.includes("/verify/batch");
+            const apiUrl = item.apiUrl || "/api/verify";
+            const isMl = apiUrl.includes("/verify/batch");
             const body = isMl
                 ? JSON.stringify({ batch_number: item.barcode })
                 : JSON.stringify({ batchNumber: item.barcode });
 
-            const res = await fetch(item.apiUrl, {
+            const res = await fetch(apiUrl, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
@@ -701,14 +702,14 @@ async function flushQueueFromServiceWorker() {
                 if (res.status >= 500) {
                     throw new Error(`Server returned status ${res.status}`);
                 }
-                
+
                 // Discard from queue for other client/unresolvable errors (like 400 or 404)
                 await deleteQueuedScan(item.id);
                 continue;
             }
 
             const data = await res.json();
-            
+
             // Format result
             let title = "Medicine Verification";
             let bodyText = "";
@@ -734,7 +735,10 @@ async function flushQueueFromServiceWorker() {
             }
 
             // Save to scan history
-            const uuid = (self.crypto && self.crypto.randomUUID) ? self.crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).substr(2);
+            const uuid =
+                self.crypto && self.crypto.randomUUID
+                    ? self.crypto.randomUUID()
+                    : Date.now().toString(36) + Math.random().toString(36).substr(2);
             await saveToScanHistory({
                 id: uuid,
                 timestamp: Date.now(),
@@ -752,7 +756,7 @@ async function flushQueueFromServiceWorker() {
                     body: bodyText,
                     icon: "/icons/icon-192.png",
                     badge: "/icons/icon-192.png",
-                    data: { url: `/${item.locale || 'en'}/history` },
+                    data: { url: `/${item.locale || "en"}/history` },
                 });
             }
         } catch (error) {
@@ -765,9 +769,9 @@ async function flushQueueFromServiceWorker() {
     // Notify clients that sync finished
     const clientsList = await self.clients.matchAll();
     clientsList.forEach((client) => {
-        client.postMessage({ 
+        client.postMessage({
             type: "SYNC_QUEUE_UPDATED",
-            count: syncedCount 
+            count: syncedCount,
         });
     });
 }

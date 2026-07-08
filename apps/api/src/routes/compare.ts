@@ -55,7 +55,7 @@ router.post(
 
             try {
                 const mlResponse = await axios.post(
-                    `${ML_SERVICE_URL}/compare`,
+                    `${ML_SERVICE_URL}/verify/compare`,
                     { medicine_a, medicine_b },
                     { signal: controller.signal }
                 );
