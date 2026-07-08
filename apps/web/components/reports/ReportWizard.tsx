@@ -12,6 +12,7 @@ import { useSearchParams } from "next/navigation";
 import { useForm, FormProvider, useFormContext } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { getBaseReportFields } from "@sahidawa/validators";
 import { motion, AnimatePresence, Variants } from "framer-motion";
 import {
     submitReport,
@@ -49,24 +50,27 @@ const sanitize = (v: string): string => {
 };
 
 // ─── Zod schema ────────────────────────────────────────────────────────────────
+const baseFields = getBaseReportFields({
+    medicineNameMin: "At least 2 characters required",
+    manufacturerMin: "At least 2 characters required",
+    descriptionMin: "Please provide at least 20 characters",
+    pharmacyNameMin: "Required",
+    addressMin: "Required",
+    cityMin: "Required",
+    stateMin: "Required",
+});
+
+const uiField = (field: z.ZodString) => z.string().transform(sanitize).pipe(field);
+
 const schema = z.object({
-    medicineName: z
-        .string()
-        .transform(sanitize)
-        .pipe(z.string().min(2, "At least 2 characters required")),
-    manufacturer: z
-        .string()
-        .transform(sanitize)
-        .pipe(z.string().min(2, "At least 2 characters required")),
-    description: z
-        .string()
-        .transform(sanitize)
-        .pipe(z.string().min(20, "Please provide at least 20 characters")),
+    medicineName: uiField(baseFields.medicineName),
+    manufacturer: uiField(baseFields.manufacturer),
+    description: uiField(baseFields.description),
     images: z.array(z.string().url()).min(1, "At least one photo is required"),
-    pharmacyName: z.string().transform(sanitize).pipe(z.string().min(2, "Required")),
-    address: z.string().transform(sanitize).pipe(z.string().min(5, "Required")),
-    city: z.string().transform(sanitize).pipe(z.string().min(2, "Required")),
-    state: z.string().transform(sanitize).pipe(z.string().min(2, "Required")),
+    pharmacyName: uiField(baseFields.pharmacyName),
+    address: uiField(baseFields.address),
+    city: uiField(baseFields.city),
+    state: uiField(baseFields.state),
     pincode: z
         .string()
         .transform(sanitize)
@@ -78,7 +82,7 @@ const schema = z.object({
                     "Enter a valid 6-digit Indian Pincode (cannot start with 0)"
                 )
         ),
-    scannedBarcode: z.string().optional(),
+    scannedBarcode: baseFields.scannedBarcode,
     medicineId: z.string().optional(),
 });
 export type FormValues = z.infer<typeof schema>;
