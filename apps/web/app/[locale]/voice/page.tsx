@@ -27,7 +27,12 @@ import {
     VOICE_LANGUAGE_OPTIONS,
 } from "./lib/languages";
 import { formatVoiceShareReport } from "./lib/report";
-import { getPreferredRecordingMimeType, supportsAudioRecording } from "./lib/recording";
+import {
+    getPreferredRecordingMimeType,
+    isRecordingBlobTooLarge,
+    MAX_RECORDING_DURATION_MS,
+    supportsAudioRecording,
+} from "./lib/recording";
 import {
     shouldReviewTranscription,
     transcribeRecordedAudio,
@@ -57,6 +62,11 @@ import VoiceVerify from "../../../components/VoiceVerify";
 
 const DEFAULT_FLOW_CONFIDENCE = getConfidenceMeta(undefined);
 const VOICE_ANIMATION_STORAGE_KEY = "sahidawa.voice.animations";
+const RECORDING_DURATION_LIMIT_MESSAGE =
+    "Recording stopped after 60 seconds. Please keep voice checks under one minute.";
+const RECORDING_SIZE_LIMIT_TITLE = "Recording too large";
+const RECORDING_SIZE_LIMIT_MESSAGE =
+    "Recording is too large. Please record a shorter clip under 20MB.";
 
 function getRecognitionErrorState(
     errorCode: string,
@@ -174,6 +184,7 @@ export default function VoiceTriagePage() {
     const audioStreamRef = useRef<MediaStream | null>(null);
     const recordingChunksRef = useRef<Blob[]>([]);
     const pendingRecordedBlobRef = useRef<Blob | null>(null);
+    const recordingLimitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const latestTranscriptRef = useRef("");
     const latestDisplayedTranscriptRef = useRef("");
     const latestConfidenceRef = useRef<number | undefined>(undefined);
@@ -215,6 +226,15 @@ export default function VoiceTriagePage() {
         const session = streamingSessionRef.current;
         streamingSessionRef.current = null;
         session?.close();
+    }
+
+    function clearRecordingLimitTimer() {
+        if (!recordingLimitTimerRef.current) {
+            return;
+        }
+
+        clearTimeout(recordingLimitTimerRef.current);
+        recordingLimitTimerRef.current = null;
     }
 
     function detachRecognitionHandlers(recognition: SpeechRecognitionLike | null) {
@@ -267,6 +287,7 @@ export default function VoiceTriagePage() {
     useEffect(() => {
         return () => {
             startSessionIdRef.current += 1;
+            clearRecordingLimitTimer();
             const recognition = recognitionRef.current;
             recognitionRef.current = null;
             detachRecognitionHandlers(recognition);
@@ -428,6 +449,7 @@ export default function VoiceTriagePage() {
 
     function resetFlow(nextStep: VoiceStep = "initial") {
         startSessionIdRef.current += 1;
+        clearRecordingLimitTimer();
         const recognition = recognitionRef.current;
         recognitionRef.current = null;
         detachRecognitionHandlers(recognition);
@@ -553,6 +575,19 @@ export default function VoiceTriagePage() {
             closeStreamingSession();
             setStreamingStatusValue("idle");
             setError(getRecognitionErrorState("no-speech", t));
+            setStep("error");
+            return;
+        }
+
+        if (isRecordingBlobTooLarge(mediaBlob)) {
+            pendingRecordedBlobRef.current = null;
+            closeStreamingSession();
+            setStreamingStatusValue("idle");
+            setError({
+                type: "generic",
+                title: RECORDING_SIZE_LIMIT_TITLE,
+                message: RECORDING_SIZE_LIMIT_MESSAGE,
+            });
             setStep("error");
             return;
         }
@@ -809,6 +844,7 @@ export default function VoiceTriagePage() {
         isStreamingStopRequestedRef.current = true;
         setIsListening(false);
         setIsVisualizerFading(true);
+        clearRecordingLimitTimer();
 
         if (mediaRecorderRef.current) {
             if (mediaRecorderRef.current.state !== "inactive") {
@@ -960,6 +996,7 @@ export default function VoiceTriagePage() {
         detachRecognitionHandlers(recognition);
         recognition?.stop();
 
+        clearRecordingLimitTimer();
         const mediaRecorder = mediaRecorderRef.current;
         mediaRecorderRef.current = null;
         detachMediaRecorderHandlers(mediaRecorder);
@@ -1072,6 +1109,18 @@ export default function VoiceTriagePage() {
             setIsListening(true);
             setIsVisualizerFading(false);
             setStep("listening");
+            clearRecordingLimitTimer();
+            recordingLimitTimerRef.current = setTimeout(() => {
+                if (mediaRecorderInstance.state === "inactive") {
+                    return;
+                }
+
+                isStreamingStopRequestedRef.current = true;
+                setIsListening(false);
+                setIsVisualizerFading(true);
+                toast.warning(RECORDING_DURATION_LIMIT_MESSAGE);
+                mediaRecorderInstance.stop();
+            }, MAX_RECORDING_DURATION_MS);
         };
 
         mediaRecorderInstance.ondataavailable = async (event) => {
@@ -1090,6 +1139,7 @@ export default function VoiceTriagePage() {
         };
 
         mediaRecorderInstance.onerror = () => {
+            clearRecordingLimitTimer();
             if (mediaRecorderRef.current === mediaRecorderInstance) {
                 mediaRecorderRef.current = null;
             }
@@ -1105,6 +1155,7 @@ export default function VoiceTriagePage() {
         };
 
         mediaRecorderInstance.onstop = async () => {
+            clearRecordingLimitTimer();
             if (mediaRecorderRef.current === mediaRecorderInstance) {
                 mediaRecorderRef.current = null;
             }
