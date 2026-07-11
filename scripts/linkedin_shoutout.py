@@ -444,10 +444,10 @@ def generate_comic_prompt_with_gemini(pr: dict, api_key: str) -> str:
         print(f"⚠️ Dynamic prompt generation failed: {e}")
     
     # Generic fallback prompt
-    return """A beautiful, vibrant 3D illustration of a modern developer's workspace.
-A glowing laptop screen, coffee cup, and neat plant on a wooden desk.
-Warm, inviting colors with high quality lighting.
-LEAVE THE EXACT CENTER OF THE IMAGE EMPTY and uncluttered, as a card will be placed there. Do not include any text."""
+    return """A clean, minimal, professional LinkedIn engineering micro-comic on a whiteboard background.
+Two simple stickmen developers interacting. One is struggling with heavy technical debt, the other provides a solution.
+Include speech bubbles with developer humor.
+DO NOT INCLUDE ANY REAL TEXT OR STATS AT THE BOTTOM. Leave the center/bottom of the image relatively empty and uncluttered, because a real GitHub PR card will be pasted directly in the middle later."""
 
 def generate_and_upload_image(pr: dict, access_token: str, org_urn: str) -> str | None:
     """
@@ -514,11 +514,42 @@ def generate_and_upload_image(pr: dict, access_token: str, org_urn: str) -> str 
 
         if bg_img:
             # Composite
-            pr_cropped = pr_img.crop((70, 70, 1130, 480))
+            # Crop a beautifully proportioned card containing the Title and Stats
+            pr_cropped = pr_img.crop((50, 50, 1150, 480))
+            
+            # --- Make the card look professional (Rounded corners + Drop Shadow) ---
+            card_w, card_h = pr_cropped.size
+            radius = 24
+            
+            # Create rounded mask
+            mask = Image.new('L', (card_w, card_h), 0)
+            draw = ImageDraw.Draw(mask)
+            draw.rounded_rectangle([(0, 0), (card_w, card_h)], radius=radius, fill=255)
+            
+            # Apply rounded mask
+            rounded_card = Image.new('RGBA', (card_w, card_h))
+            rounded_card.paste(pr_cropped, (0, 0), mask=mask)
+            
+            # Create a soft, elegant drop shadow
+            shadow_blur = 20
+            shadow_offset_y = 15
+            shadow_canvas = Image.new('RGBA', (card_w + shadow_blur*2, card_h + shadow_blur*2 + shadow_offset_y), (0,0,0,0))
+            shadow_draw = ImageDraw.Draw(shadow_canvas)
+            shadow_draw.rounded_rectangle(
+                [(shadow_blur, shadow_blur), (card_w + shadow_blur, card_h + shadow_blur)],
+                radius=radius, fill=(0, 0, 0, 90)
+            )
+            shadow_canvas = shadow_canvas.filter(ImageFilter.GaussianBlur(shadow_blur))
+            
+            # Paste the rounded card onto the shadow canvas
+            shadow_canvas.paste(rounded_card, (shadow_blur, shadow_blur), rounded_card)
+            
+            # Paste the final shadowed card onto the AI background
             bg_w, bg_h = bg_img.size
-            pr_w, pr_h = pr_cropped.size
-            offset = ((bg_w - pr_w) // 2, (bg_h - pr_h) // 2)
-            bg_img.paste(pr_cropped, offset, pr_cropped)
+            final_card_w, final_card_h = shadow_canvas.size
+            offset = ((bg_w - final_card_w) // 2, (bg_h - final_card_h) // 2 + 30) # slight offset downwards
+            
+            bg_img.paste(shadow_canvas, offset, shadow_canvas)
             bg_img.convert('RGB').save(comic_path, format="PNG")
             print("✅ Successfully composited AI background and Real PR Card.")
         else:
