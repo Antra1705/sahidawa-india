@@ -342,13 +342,13 @@ def generate_post_with_gemini(pr: dict, tier_display: str, tier_desc: str) -> st
     contributor_name = get_contributor_name(pr['author'])
     system_prompt = (
         "You are the Open-Source Maintainer for SahiDawa, India's medicine safety platform. "
-        "Write a highly engaging, concise LinkedIn post that mixes a 'Technical Deep Dive' with a 'Community Spotlight'.\n\n"
+        "Write a highly engaging LinkedIn post that mixes a 'Technical Deep Dive' with a 'Community Spotlight'.\n\n"
         "CRITICAL RULES FOR TONE AND VARIABILITY:\n"
         "- Hook the reader immediately! Start with a bold statement or a question about the technical challenge.\n"
-        "- Tell a story: What was the problem? How did the contributor architect the solution? Why does it matter for Indians relying on SahiDawa? do not put it as it is put your own words based on the context and git diff provided\n"
+        "- Tell a story: What was the problem? How did the contributor architect the solution? Why does it matter for Indians relying on SahiDawa? Do not put it as it is, put your own words based on the context and git diff provided.\n"
         "- Be warm, appreciative, and celebrate the open-source community spirit (GSSoC).\n"
         "- Use short paragraphs (1-2 sentences) and professional emojis (🚀, 🛡️, ⚙️, 👏, 🔥) to make it highly readable and scroll-stopping.\n"
-        "- STRICT LENGTH LIMIT: Keep the entire post under 200 words. Do NOT write long essays.\n"
+        "- LENGTH & COMPLETENESS: Aim for around 150-200 words. You MUST finish your thoughts completely. Do not leave trailing sentences.\n"
         "- Do not use robotic templates. Weave the facts naturally.\n\n"
         "FRAMEWORK TO FOLLOW:\n"
         "1. The Scroll-Stopping Hook: E.g., 'Ever wondered how we handle X at scale? @Contributor just solved it for us...'\n"
@@ -473,31 +473,34 @@ def generate_and_upload_image(pr: dict, access_token: str, org_urn: str) -> str 
     
     prompt = generate_comic_prompt_with_gemini(pr, api_key)
 
-    # Step 1 — Generate comic via Gemini Imagen API
+    # Step 1 — Generate comic via Gemini SDK
     print("🎨 Requesting engineering comic from Gemini API...")
-    url = f"https://generativelanguage.googleapis.com/v1alpha/models/imagen-3.0-generate-002:predict?key={api_key}"
-    payload = {
-        "instances": [{"prompt": prompt}],
-        "parameters": {
-            "sampleCount": 1,
-            "aspectRatio": "16:9"
-        }
-    }
     try:
-        resp = requests.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
+        from google import genai
+        from google.genai import types
         
-        # Write binary image to /tmp
-        import base64
-        b64_img = data["predictions"][0]["bytesBase64Encoded"]
-        with open(comic_path, "wb") as f:
-            f.write(base64.b64decode(b64_img))
-        print("✅ Imagen generated comic successfully.")
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_images(
+            model='imagen-3.0-generate-001',
+            prompt=prompt,
+            config=types.GenerateImagesConfig(
+                number_of_images=1,
+                output_mime_type="image/png",
+                aspect_ratio="16:9"
+            )
+        )
+        
+        if response.generated_images:
+            # Write binary image to /tmp
+            with open(comic_path, "wb") as f:
+                f.write(response.generated_images[0].image.image_bytes)
+            print("✅ Gemini API generated comic successfully.")
+        else:
+            print("⚠️ No image returned from Gemini API.")
+            return None
+            
     except Exception as e:
-        print(f"⚠️ Imagen API generation failed: {e}")
-        if 'resp' in locals():
-            print(f"Response: {resp.text[:500]}")
+        print(f"⚠️ Gemini API Image generation failed: {e}")
         return None
 
     # Step 2 — Register upload with LinkedIn
