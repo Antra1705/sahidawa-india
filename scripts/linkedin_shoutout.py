@@ -337,21 +337,21 @@ def generate_post_with_gemini(pr: dict, tier_display: str, tier_desc: str) -> st
     contributor_name = get_contributor_name(pr['author'])
     system_prompt = (
         "You are the Open-Source Maintainer for SahiDawa, India's medicine safety platform. "
-        "Write an engaging, appreciative, and detailed LinkedIn post acknowledging a contributor's merged PR. "
-        "The post should celebrate their effort while diving deep into the technical impact. Make it long, story-driven, and highly engaging.\n\n"
+        "Write a highly engaging, long-form LinkedIn post that mixes a 'Hero's Journey Technical Deep Dive' with a 'Community Spotlight'.\n\n"
         "CRITICAL RULES FOR TONE AND VARIABILITY:\n"
-        "- Be warm and appreciative. Celebrate the contributor's success! \n"
-        "- Tell a story: What was the problem? How did they solve it? What is the impact?\n"
-        "- Make it a detailed, long-form post that engages readers and developers.\n"
-        "- Do not use robotic templates. Weave the facts naturally.\n"
-        "- Use professional emojis (e.g., 🚀, 🛡️, ⚙️, 👏, 🔥) appropriately to break up the text.\n\n"
+        "- Hook the reader immediately! Start with a bold statement or a question about the technical challenge.\n"
+        "- Tell a story: What was the problem? How did the contributor architect the solution? Why does it matter for 1.4 billion Indians relying on SahiDawa?\n"
+        "- Be warm, appreciative, and celebrate the open-source community spirit (GSSoC).\n"
+        "- Use short paragraphs (1-2 sentences) and professional emojis (🚀, 🛡️, ⚙️, 👏, 🔥) to make it highly readable and scroll-stopping.\n"
+        "- Do not use robotic templates. Weave the facts naturally.\n\n"
         "FRAMEWORK TO FOLLOW:\n"
-        "1. The Hook: A strong opening celebrating the merge and the contributor's effort.\n"
-        "2. The Problem: What was the challenge or bug that needed fixing?\n"
-        "3. The Solution & Mechanism: Explain deeply how they solved it, referencing the actual technical changes (based on the git diff).\n"
-        "4. The Impact: How does this help SahiDawa scale or improve user experience?\n"
+        "1. The Scroll-Stopping Hook: E.g., 'Ever wondered how we handle X at scale? @Contributor just solved it for us...'\n"
+        "2. The Problem & Impact: What was broken or missing, and how does it affect SahiDawa's mission?\n"
+        "3. The Technical Deep Dive: Deeply explain the engineering mechanism and code changes (based on the git diff).\n"
+        "4. The Community Spotlight: Celebrate the contributor's open-source journey and effort.\n"
         "5. The Connection: Include 'Connect with [Name]: [LinkedIn URL]'.\n"
-        "6. The Call to Action: End EXACTLY with this text (do not modify this footer):\n\n"
+        "6. The Comment Trigger: End with an engaging question for the audience (e.g., 'Have you ever faced a similar issue? Let us know below!').\n"
+        "7. The Call to Action: End EXACTLY with this text (do not modify this footer):\n\n"
         "Want to contribute to India's open-source stack? Join the GSSoC 2026 wave on our repo:\n\n"
         "Codebase: [Insert Codebase URL]\n"
         "Merged PR: [Insert PR URL]"
@@ -409,8 +409,8 @@ def post_to_linkedin(post_text: str, pr: dict) -> None:
     access_token = get_env_or_exit("LINKEDIN_ACCESS_TOKEN")
     org_id = get_env_or_exit("LINKEDIN_ORG_ID")
     
-    # We simplified the image upload for brevity here, but fall back to ARTICLE
-    fallback_url = f"https://opengraph.githubassets.com/1/{pr['repo']}/pull/{pr['number']}"
+    # Use the actual PR URL so LinkedIn scrapes the OpenGraph preview natively
+    article_url = pr['url']
     author_urn = f"urn:li:organization:{org_id}"
     
     payload = {
@@ -420,7 +420,7 @@ def post_to_linkedin(post_text: str, pr: dict) -> None:
             "com.linkedin.ugc.ShareContent": {
                 "shareCommentary": {"text": post_text},
                 "shareMediaCategory": "ARTICLE",
-                "media": [{"status": "READY", "originalUrl": fallback_url}]
+                "media": [{"status": "READY", "originalUrl": article_url}]
             }
         },
         "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"}
