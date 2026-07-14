@@ -27,6 +27,7 @@ _Built for Bharat. Not just India._
 ## 🔗 Quick Links
 
 - 📖 [Documentation](./docs/)
+- 📝 [Architecture Decision Records (ADRs)](./docs/adr/)
 - 🚀 [Getting Started](#-getting-started)
 - 🤝 [Contributing Guide](./CONTRIBUTING.md)
 - 🌏 [Supported Languages](#-supported-languages)
@@ -97,6 +98,8 @@ India has a three-layer healthcare crisis that **no existing platform solves sim
 ---
 
 ## 🏗️ Architecture
+
+Refer to the [Architecture Decision Records (ADRs)](./docs/adr/) for detailed technical design documentation and choices.
 
 ```mermaid
 flowchart TD
